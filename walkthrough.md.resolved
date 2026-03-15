@@ -1,0 +1,156 @@
+# Pehlivan-MDU Kod İnceleme Raporu
+
+**Proje:** Pehlivan Team — BLDC Motor Sürücü + Güvenlik/Telemetri
+**MCU:** STM32G474VET6 | **Hedef:** Shell Eco-Marathon 2026
+
+---
+
+## Dosya Yapısı
+
+| Dosya | Satır | Açıklama |
+|---|---|---|
+| [motor_driver_v2.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20(1)/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c) | 669 | Motor sürücü v4.0 — 6-step komütasyon, ADC, ramp kontrolü |
+| [safety_telemetry.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20(1)/Pehlivan-MDU-main/Core/Src/safety_telemetry.c) | 731 | Failsafe state machine, kara kutu, telemetri v3.0 |
+| [motor_driver.h](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20(1)/Pehlivan-MDU-main/Core/Inc/motor_driver.h) | 147 | Pin haritası, sabitler, extern değişkenler |
+| [safety_telemetry.h](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20(1)/Pehlivan-MDU-main/Core/Inc/safety_telemetry.h) | 123 | Failsafe enum'lar, LogRecord_t yapısı, prototipler |
+| [main.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20(1)/Pehlivan-MDU-main/Core/Src/main.c) | 1045 | CubeMX üretimi — periferik init + [Motor_Init()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#509-561) / [Motor_Loop()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#562-669) |
+| [stm32g4xx_it.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20(1)/Pehlivan-MDU-main/Core/Src/stm32g4xx_it.c) | 233 | Interrupt handler'lar |
+
+---
+
+## Tamamlanmış Audit Düzeltmeleri (v3→v4) ✅
+
+Kodda belgelenen ve uygulanmış düzeltmeler:
+
+| # | Sorun | Çözüm | Durum |
+|---|---|---|---|
+| [1] | `ihallval` hiç güncellenmiyordu | [ExtInt()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#277-325) sonunda `ihallval = hallval` eklendi | ✅ |
+| [2] | Tek `dene` sayacı, yanlış sıfırlanıyordu | `deneStart` + `deneSys` ayrı sayaçlar | ✅ |
+| [3] | `WHEEL_CIRC_M/KM` çift tanımlama | [.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/main.c)'deki `#define`'lar kaldırılıp [.h](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Inc/main.h) kullanıldı | ✅ |
+| [4] | [Safety_ADCUpdated()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/safety_telemetry.c#704-707) hiç çağrılmıyordu | [adcRead()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#326-669) sonuna eklendi | ✅ |
+| [5] | Safety sistemi Motor'a bağlanmamıştı | [Motor_Init](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#509-561) → [Safety_Init()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/safety_telemetry.c#708-731), [Motor_Loop](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#562-669) → [Safety_Check()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/safety_telemetry.c#599-703) | ✅ |
+| [6] | `else { dene=0; }` her hatada sıfırlama | Kaldırıldı | ✅ |
+| [G1] | Hall volatile race condition | Yerel snapshot ile okuma | ✅ |
+| [G2] | `acceltop` overflow riski | `int32_t` yapıldı | ✅ |
+| [G3] | Recovery mekanizması eksikti | Hysteresis + timer ile otomatik geri dönüş | ✅ |
+
+---
+
+## 🚨 Tespit Edilen Kritik Sorunlar
+
+### 1. [stm32g4xx_it.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/stm32g4xx_it.c) → Eksik Interrupt Bağlantıları
+
+> [!CAUTION]
+> [stm32g4xx_it.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/stm32g4xx_it.c) dosyasında **TIM6, Hall EXTI ve UART callback'ları tanımlı değil!** Bu, motorun ve güvenlik sisteminin hiç çalışmaması anlamına gelir.
+
+Kod içindeki yorumlarda belirtilen ama **henüz uygulanmamış** kesme bağlantıları:
+
+```c
+// motor_driver_v2.c satır 280-284'te istenen:
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    if (GPIO_Pin == HALL_A_Pin || GPIO_Pin == HALL_B_Pin ||
+        GPIO_Pin == HALL_C_Pin) { ExtInt(); }
+}
+
+// motor_driver_v2.c satır 434-436'da istenen:
+extern void TIM6_1kHz_Callback(void);
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+    if (htim->Instance == TIM6) { TIM6_1kHz_Callback(); }
+}
+
+// safety_telemetry.c satır 228-233'te istenen:
+// HAL_UART_TxCpltCallback → zaten safety_telemetry.c'de tanımlı (satır 322)
+// Ancak UART4 callback'ı (HAL_UART4_TxCpltCallback_Internal) çağrılmıyor
+```
+
+### 2. [main.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/main.c) → TIM6 Handle Eksik
+
+> [!WARNING]
+> [main.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/main.c)'de `TIM_HandleTypeDef htim6;` tanımlı **değil** ve `MX_TIM6_Init()` fonksiyonu yok. [motor_driver_v2.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c)'de `extern TIM_HandleTypeDef htim6;` olmasına rağmen TIM6 CubeMX'te yapılandırılmamış.
+
+### 3. [main.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/main.c) → `while(1)` Kapanış Parantezi Sorunu
+
+```c
+// Satır 149-153:
+while (1) {
+    Motor_Loop();
+/* USER CODE END WHILE */
+/* USER CODE END 3 */
+}  // ← Bu kapanış main() fonksiyonunun mu yoksa while'ın mı?
+```
+
+[main()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/main.c#98-1045) fonksiyonunun kapanış `}` süslü parantezi eksik ya da yanlış yerleştirilmiş görünüyor.
+
+### 4. [adcRead()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#326-669) Fonksiyonu → Eksik Kapanış `}`
+
+> [!CAUTION]
+> [motor_driver_v2.c satır 333-407](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20(1)/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#L333-L407): [adcRead()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#326-669) fonksiyonunun kapanış `}` süslü parantezi **yok!** [menu()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#409-428) fonksiyonu [adcRead()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#326-669) içinde tanımlanmış gibi görünüyor — derleme hatası verecektir.
+
+```diff
+     /* Safety sistemine ADC'nin guncellendigi bildirilir. */
+     Safety_ADCUpdated();
++}   // ← EKSİK
+ 
+ 
+ /* DEBUG CIKISI — USART2 + UART4 */
+ void menu(void) {
+```
+
+### 5. CRC Yapılandırma Uyumsuzluğu
+
+[main.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/main.c) satır 559: `DefaultPolynomialUse = DEFAULT_POLYNOMIAL_ENABLE` → 32-bit CRC polynomial kullanıyor.
+Ancak [safety_telemetry.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/safety_telemetry.c) 16-bit CRC bekliyor. `USE_SW_CRC` tanımlı olduğu için şu an yazılımsal CRC16 kullanılıyor — **HW CRC'ye geçilirse çalışmaz.**
+
+---
+
+## ⚠️ TODO Listesi (Kod İçi Notlardan)
+
+| Öncelik | Görev | Konum |
+|---|---|---|
+| 🔴 Kritik | [stm32g4xx_it.c](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/stm32g4xx_it.c)'ye TIM6, EXTI ve UART callback ekle | it.c satır 230 |
+| 🔴 Kritik | [adcRead()](file:///c:/Users/EmircanPALA/Downloads/Pehlivan-MDU-main%20%281%29/Pehlivan-MDU-main/Core/Src/motor_driver_v2.c#326-669) kapanış `}` ekle | motor_driver_v2.c satır 406-407 |
+| 🔴 Kritik | CubeMX'te TIM6 yapılandır + `MX_TIM6_Init()` üret | .ioc |
+| 🟡 Orta | CubeMX'te CRC'yi 16-bit polynomial ile yapılandır | .ioc |
+| 🟡 Orta | UART4 baud rate'i 460800'e yükselt | .ioc |
+| 🟡 Orta | `FS_HALT`/`FS_PANIC` manuel reset test et | pist testi |
+| 🟢 Düşük | Telemetri yer istasyonu yazılımı | PC |
+| 🟢 Düşük | ADC zamanlamasını doğrula | analiz |
+
+---
+
+## Mimari Özet
+
+```mermaid
+graph TD
+    subgraph "main.c"
+        A["HAL_Init + MX_xxx_Init()"] --> B["Motor_Init()"]
+        B --> C["while(1): Motor_Loop()"]
+    end
+    
+    subgraph "Motor Sürücü"
+        C --> D["IWDG_Feed"]
+        C --> E["SW_Watchdog_Feed"]
+        C --> F["Safety_Check"]
+        C --> G["adcRead → 100ms"]
+        C --> H["Gaz Pedali → 10ms"]
+        C --> I["Ramp Kontrolü"]
+        C --> J["BlackBox_Flush"]
+    end
+    
+    subgraph "Güvenlik & Telemetri"
+        F --> K["Sıcaklık / Voltaj / Akım"]
+        F --> L["Hall Timeout"]
+        F --> M["ADC Timeout"]
+        F --> N["Panic Pin"]
+        F --> O["Recovery Check"]
+        K --> P["Safety_SetState"]
+        P --> Q["BlackBox_Log → UART4"]
+        G --> R["Telemetry_SendUART → USART2"]
+    end
+    
+    subgraph "Interrupt'lar"
+        S["TIM6 1kHz"] --> T["TIM6_1kHz_Callback"]
+        U["EXTI Hall"] --> V["ExtInt → Commutate"]
+        W["UART TX Complete"] --> X["uart4Busy = false"]
+    end
+```
